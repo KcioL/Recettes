@@ -11,7 +11,7 @@ const firebaseConfig = {
   appId: "1:999863928968:web:b6d5583f480876ad41373d",
 };
 
-const TITRE = "Nos petits plats";
+const TITRE = "Les recettes de Jenigger";
 
 /* ========================================================= */
 

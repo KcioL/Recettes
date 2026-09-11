@@ -1,6 +1,6 @@
 {
-  "name": "Nos petits plats",
-  "short_name": "Petits plats",
+  "name": "Les recettes de Jenigger",
+  "short_name": "Jenigger",
   "description": "Nos recettes, avec les photos et les liens d'inspiration",
   "lang": "fr",
   "start_url": "./",
