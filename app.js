@@ -11,7 +11,7 @@ const firebaseConfig = {
   appId: "1:999863928968:web:b6d5583f480876ad41373d",
 };
 
-const TITRE = "Les recettes de Jenigger";
+const TITRE = "Nos petits plats";
 
 /* ========================================================= */
 
@@ -31,6 +31,7 @@ const photosCache = new Map();   // id de photo -> image (data URL)
 let recherche = "";
 let scrollAccueil = 0;
 let wakeLock = null;
+let toucheEchap = null;          // action de la touche Échap sur la page en cours
 
 /* =========================================================
    Utilitaires
@@ -54,6 +55,9 @@ const icones = {
   loupe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>',
   croix: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   photo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+  coche: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  poubelle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>',
+  crayon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
   lien: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
 };
 
@@ -184,12 +188,30 @@ async function chargerPhotos(recette) {
   return recette.photos.map((id) => ({ id, data: photosCache.get(id) })).filter((p) => p.data);
 }
 
+// Supprime une ou plusieurs recettes avec leurs photos
+async function supprimerRecettes(liste, progression = () => {}) {
+  if (!navigator.onLine) throw new Error("Pas de connexion internet : impossible de supprimer pour l'instant");
+  let i = 0;
+  for (const r of liste) {
+    progression(++i, liste.length);
+    const ref = doc(db, "recettes", r.id);
+    const photosSnap = await getDocs(collection(ref, "photos"));
+    const batch = writeBatch(db);
+    photosSnap.forEach((d) => batch.delete(d.ref));
+    batch.delete(ref);
+    await batch.commit();
+    (r.photos || []).forEach((pid) => photosCache.delete(pid));
+    if (recettesCache) recettesCache = recettesCache.filter((x) => x.id !== r.id);
+  }
+}
+
 /* =========================================================
    Routeur (#/  #/recette/:id  #/ajouter  #/modifier/:id)
    ========================================================= */
 
 async function route() {
   libererEcran();
+  toucheEchap = null;
   const parties = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (parties.length === 0) return await pageAccueil();
@@ -230,7 +252,7 @@ async function pageAccueil() {
         <a class="btn" href="#/ajouter">${icones.plus}<span>Ajouter</span></a>
       </div>
     </header>
-    <main class="page">
+    <main class="page" id="page">
       ${
         recettes.length === 0
           ? `<div class="vide seyes avec-marge">
@@ -242,45 +264,201 @@ async function pageAccueil() {
                <span class="sr-only">Rechercher</span>
                <input id="recherche" type="search" placeholder="Une recette, un ingrédient…" value="${esc(recherche)}" autocomplete="off">
              </label>
-             <p class="compteur" id="compteur"></p>
+             <div class="ligne-compteur">
+               <p class="compteur" id="compteur" aria-live="polite"></p>
+               <button type="button" class="lien" id="btn-selectionner">Sélectionner</button>
+             </div>
              <ul class="grille" id="grille"></ul>`
       }
-    </main>`;
+    </main>
+    <div class="barre-bas barre-selection" id="barre-selection" hidden>
+      <div class="barre-bas-inner">
+        <button type="button" class="btn btn-clair" id="annuler-selection">Annuler</button>
+        <button type="button" class="btn btn-supprimer" id="supprimer-selection" disabled>${icones.poubelle}<span id="texte-supprimer">Supprimer</span></button>
+      </div>
+    </div>`;
 
   if (recettes.length === 0) return;
 
+  const page = document.getElementById("page");
   const grille = document.getElementById("grille");
   const compteur = document.getElementById("compteur");
   const champ = document.getElementById("recherche");
+  const barre = document.getElementById("barre-selection");
+  const btnSelectionner = document.getElementById("btn-selectionner");
+  const btnAnnuler = document.getElementById("annuler-selection");
+  const btnSupprimer = document.getElementById("supprimer-selection");
+  const texteSupprimer = document.getElementById("texte-supprimer");
+
+  const selection = new Set();
+  let modeSelection = false;
+  let nbAffichees = recettes.length;
+
+  const pluriel = (n, mot) => `${n} ${mot}${n > 1 ? "s" : ""}`;
+
+  const majCompteur = () => {
+    if (modeSelection) {
+      compteur.textContent = selection.size
+        ? `${pluriel(selection.size, "recette")} sélectionnée${selection.size > 1 ? "s" : ""}`
+        : "Touche les recettes à supprimer";
+    } else if (recherche.trim()) {
+      compteur.textContent = `${pluriel(nbAffichees, "recette")} trouvée${nbAffichees > 1 ? "s" : ""}`;
+    } else {
+      compteur.textContent = pluriel(recettes.length, "recette");
+    }
+  };
+
+  const majSelection = () => {
+    page.classList.toggle("en-selection", modeSelection);
+    barre.hidden = !modeSelection;
+    btnSelectionner.hidden = modeSelection;
+    btnSupprimer.disabled = selection.size === 0;
+    texteSupprimer.textContent = selection.size ? `Supprimer (${selection.size})` : "Supprimer";
+    grille.querySelectorAll(".fiche").forEach((el) => {
+      const choisie = selection.has(el.dataset.id);
+      el.classList.toggle("est-selectionnee", choisie);
+      el.querySelector(".etat-selection").textContent = modeSelection ? (choisie ? ", sélectionnée" : ", non sélectionnée") : "";
+    });
+    majCompteur();
+  };
+
+  const entrerSelection = (id) => {
+    modeSelection = true;
+    if (id) selection.add(id);
+    navigator.vibrate?.(15); // petite vibration sur Android
+    majSelection();
+  };
+
+  const quitterSelection = () => {
+    modeSelection = false;
+    selection.clear();
+    majSelection();
+  };
+  toucheEchap = () => modeSelection && quitterSelection();
 
   const afficher = () => {
     const q = sansAccents(recherche.trim());
     const liste = q ? recettes.filter((r) => sansAccents([r.titre, ...r.ingredients].join(" ")).includes(q)) : recettes;
-    const s = liste.length > 1 ? "s" : "";
-    compteur.textContent = q ? `${liste.length} recette${s} trouvée${s}` : `${recettes.length} recette${recettes.length > 1 ? "s" : ""}`;
+    nbAffichees = liste.length;
 
     grille.innerHTML = liste
       .map(
         (r) => `
         <li>
-          <a class="fiche ${pastelDe(r.id)}" href="#/recette/${r.id}">
-            ${
-              r.miniature
-                ? `<img class="fiche-photo" src="${esc(r.miniature)}" alt="" loading="lazy">`
-                : `<div class="fiche-vide seyes" aria-hidden="true">${esc(r.titre.trim().charAt(0).toUpperCase())}</div>`
-            }
-            <h2 class="fiche-titre">${esc(r.titre)}</h2>
+          <a class="fiche ${pastelDe(r.id)}" href="#/recette/${r.id}" data-id="${r.id}" draggable="false">
+            <div class="fiche-visuel">
+              ${
+                r.miniature
+                  ? `<img class="fiche-photo" src="${esc(r.miniature)}" alt="" loading="lazy" draggable="false">`
+                  : `<div class="fiche-vide seyes" aria-hidden="true">${esc(r.titre.trim().charAt(0).toUpperCase())}</div>`
+              }
+              <span class="fiche-coche" aria-hidden="true">${icones.coche}</span>
+            </div>
+            <h2 class="fiche-titre">${esc(r.titre)}<span class="sr-only etat-selection"></span></h2>
           </a>
         </li>`
       )
       .join("");
+    majSelection();
   };
+
+  /* ---- appui long pour sélectionner (téléphone) ---- */
+  let appui = null;          // { minuteur, x, y }
+  let ignorerClic = false;   // le clic qui suit un appui long ne doit pas ouvrir la recette
+  let dernierAppuiLong = 0;
+
+  const appuiLong = (id) => {
+    dernierAppuiLong = Date.now();
+    ignorerClic = true;
+    if (!modeSelection) entrerSelection(id);
+    else {
+      selection.add(id);
+      majSelection();
+    }
+  };
+  const annulerAppui = () => {
+    if (appui) clearTimeout(appui.minuteur);
+    appui = null;
+  };
+
+  grille.addEventListener("pointerdown", (e) => {
+    ignorerClic = false;
+    const fiche = e.target.closest(".fiche");
+    if (!fiche || e.button !== 0) return;
+    annulerAppui();
+    appui = {
+      x: e.clientX,
+      y: e.clientY,
+      minuteur: setTimeout(() => {
+        appui = null;
+        appuiLong(fiche.dataset.id);
+      }, 450),
+    };
+  });
+  grille.addEventListener("pointermove", (e) => {
+    if (appui && Math.hypot(e.clientX - appui.x, e.clientY - appui.y) > 10) annulerAppui(); // elle fait défiler
+  });
+  grille.addEventListener("pointerup", annulerAppui);
+  grille.addEventListener("pointercancel", annulerAppui);
+
+  // Android (appui long) et clic droit sur ordinateur : pas de menu, on sélectionne
+  grille.addEventListener("contextmenu", (e) => {
+    const fiche = e.target.closest(".fiche");
+    if (!fiche) return;
+    e.preventDefault();
+    if (Date.now() - dernierAppuiLong > 1000) {
+      annulerAppui();
+      appuiLong(fiche.dataset.id);
+    }
+  });
+
+  grille.addEventListener("click", (e) => {
+    const fiche = e.target.closest(".fiche");
+    if (!fiche) return;
+    if (ignorerClic) {
+      e.preventDefault();
+      ignorerClic = false;
+      return;
+    }
+    if (modeSelection) {
+      e.preventDefault();
+      const id = fiche.dataset.id;
+      if (selection.has(id)) selection.delete(id);
+      else selection.add(id);
+      majSelection();
+      return;
+    }
+    scrollAccueil = window.scrollY;
+  });
+
+  btnSelectionner.addEventListener("click", () => entrerSelection());
+  btnAnnuler.addEventListener("click", quitterSelection);
+
+  btnSupprimer.addEventListener("click", async () => {
+    const choisies = recettes.filter((r) => selection.has(r.id));
+    if (!choisies.length) return;
+    const question = choisies.length === 1 ? `Supprimer « ${choisies[0].titre} » ?` : `Supprimer ces ${choisies.length} recettes ?`;
+    if (!confirm(`${question} Cette action est définitive.`)) return;
+
+    btnSupprimer.disabled = true;
+    btnAnnuler.disabled = true;
+    scrollAccueil = window.scrollY;
+    try {
+      await supprimerRecettes(choisies, (i, n) => {
+        texteSupprimer.textContent = n > 1 ? `Suppression ${i}/${n}…` : "Suppression…";
+      });
+      toast(choisies.length === 1 ? "Recette supprimée" : `${choisies.length} recettes supprimées`);
+    } catch (err) {
+      console.error(err);
+      toast(err.message.startsWith("Pas de connexion") ? err.message : "La suppression n'a pas pu aller jusqu'au bout. Réessaie.");
+    }
+    route(); // réaffiche le carnet à jour
+  });
 
   champ.addEventListener("input", () => {
     recherche = champ.value;
     afficher();
   });
-  grille.addEventListener("click", () => (scrollAccueil = window.scrollY));
 
   afficher();
   requestAnimationFrame(() => window.scrollTo(0, scrollAccueil));
@@ -303,7 +481,10 @@ async function pageRecette(id) {
   app.innerHTML = `
     <nav class="barre">
       <a class="retour" href="#/">${icones.retour}<span>Recettes</span></a>
-      <a class="btn btn-clair" href="#/modifier/${r.id}">Modifier</a>
+      <div class="barre-actions">
+        <button type="button" class="btn btn-supprimer" id="supprimer-recette">${icones.poubelle}<span class="texte-bouton">Supprimer</span></button>
+        <a class="btn btn-clair" href="#/modifier/${r.id}">${icones.crayon}<span class="texte-bouton">Modifier</span></a>
+      </div>
     </nav>
 
     ${
@@ -367,6 +548,21 @@ async function pageRecette(id) {
         ${r.notes ? `<aside class="notes"><h3>Notes</h3>${esc(r.notes)}</aside>` : ""}
       </section>
     </main>`;
+
+  document.getElementById("supprimer-recette").addEventListener("click", async (e) => {
+    if (!confirm(`Supprimer « ${r.titre} » ? Cette action est définitive.`)) return;
+    const bouton = e.currentTarget;
+    bouton.disabled = true;
+    try {
+      await supprimerRecettes([r]);
+      toast("Recette supprimée");
+      aller("#/", { remplacer: true });
+    } catch (err) {
+      console.error(err);
+      bouton.disabled = false;
+      toast(err.message.startsWith("Pas de connexion") ? err.message : "La suppression a échoué. Réessaie.");
+    }
+  });
 
   // photos en pleine qualité
   if (r.photos.length) {
@@ -532,21 +728,13 @@ async function pageFormulaire(id = null) {
   if (r) {
     document.getElementById("supprimer").addEventListener("click", async () => {
       if (!confirm(`Supprimer « ${r.titre} » ? Cette action est définitive.`)) return;
-      if (!navigator.onLine) return montrerErreur("Pas de connexion internet : impossible de supprimer pour l'instant.");
       try {
-        const ref = doc(db, "recettes", r.id);
-        const photosSnap = await getDocs(collection(ref, "photos"));
-        const batch = writeBatch(db);
-        photosSnap.forEach((d) => batch.delete(d.ref));
-        batch.delete(ref);
-        await batch.commit();
-        r.photos.forEach((pid) => photosCache.delete(pid));
-        recettesCache = null;
+        await supprimerRecettes([r]);
         toast("Recette supprimée");
         aller("#/", { remplacer: true });
       } catch (err) {
         console.error(err);
-        montrerErreur(`La suppression a échoué (${err.code || err.message}).`);
+        montrerErreur(err.message.startsWith("Pas de connexion") ? err.message : `La suppression a échoué (${err.code || err.message}).`);
       }
     });
   }
@@ -679,6 +867,10 @@ function libererEcran() {
     wakeLock = null;
   }
 }
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && toucheEchap) toucheEchap();
+});
 
 // l'écran allumé est coupé quand on change d'appli : on le redemande au retour
 document.addEventListener("visibilitychange", async () => {
