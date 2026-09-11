@@ -1,23 +1,21 @@
 /* =========================================================
    CONFIGURATION : à remplir
    Console Firebase > Paramètres du projet > Général > Vos applications > Config
-   (ces valeurs peuvent être publiques : ce sont les règles Firestore qui protègent les données)
    ========================================================= */
 const firebaseConfig = {
-  apiKey: "TA_CLE_API",
-  authDomain: "ton-projet.firebaseapp.com",
-  projectId: "ton-projet",
-  appId: "TON_APP_ID",
+  apiKey: "AIzaSyC85xgXx-M7S1d_93AMXm0O7-jUM4YbwSo",
+  authDomain: "recettes-1b272.firebaseapp.com",
+  projectId: "recettes-1b272",
+  storageBucket: "recettes-1b272.firebasestorage.app",
+  messagingSenderId: "999863928968",
+  appId: "1:999863928968:web:b6d5583f480876ad41373d",
 };
 
-const TITRE = "Mon carnet de recettes"; // mets son prénom !
+const TITRE = "Le carnet de recettes de Jenigger"; // mets son prénom !
 
 /* ========================================================= */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import {
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut,
-} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   collection, doc, getDoc, getDocs, setDoc, updateDoc, writeBatch,
@@ -27,8 +25,7 @@ import {
 const app = document.getElementById("app");
 const PASTELS = ["lavande", "menthe", "peche", "beurre", "rose", "ciel"];
 
-let auth, db;
-let utilisateur = null;
+let db;
 let recettesCache = null;        // liste des recettes gardée en mémoire
 const photosCache = new Map();   // id de photo -> image (data URL)
 let recherche = "";
@@ -193,8 +190,6 @@ async function chargerPhotos(recette) {
 
 async function route() {
   libererEcran();
-  if (!utilisateur) return pageConnexion();
-
   const parties = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (parties.length === 0) return await pageAccueil();
@@ -221,46 +216,6 @@ function pageConfiguration() {
         <p class="muet">Console Firebase, Paramètres du projet, puis « Vos applications ».</p>
       </div>
     </main>`;
-}
-
-function pageConnexion() {
-  document.title = TITRE;
-  app.innerHTML = `
-    <main class="ecran seyes">
-      <form class="carte avec-marge" id="form-connexion" novalidate>
-        <h1>${esc(TITRE)}</h1>
-        <div id="erreur-connexion"></div>
-        <div class="champ">
-          <label for="email">Adresse e-mail</label>
-          <input id="email" type="email" autocomplete="email" required>
-        </div>
-        <div class="champ">
-          <label for="mdp">Mot de passe</label>
-          <input id="mdp" type="password" autocomplete="current-password" required>
-        </div>
-        <button class="btn" type="submit">Se connecter</button>
-      </form>
-    </main>`;
-
-  document.getElementById("form-connexion").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const bouton = e.target.querySelector("button");
-    const zone = document.getElementById("erreur-connexion");
-    bouton.disabled = true;
-    bouton.textContent = "Connexion…";
-    try {
-      await signInWithEmailAndPassword(auth, document.getElementById("email").value.trim(), document.getElementById("mdp").value);
-      // onAuthStateChanged s'occupe d'afficher le carnet
-    } catch (err) {
-      const messages = {
-        "auth/too-many-requests": "Trop d'essais. Réessaie dans quelques minutes.",
-        "auth/network-request-failed": "Pas de connexion internet.",
-      };
-      zone.innerHTML = `<p class="erreur">${messages[err.code] || "E-mail ou mot de passe incorrect."}</p>`;
-      bouton.disabled = false;
-      bouton.textContent = "Se connecter";
-    }
-  });
 }
 
 async function pageAccueil() {
@@ -290,10 +245,8 @@ async function pageAccueil() {
              <p class="compteur" id="compteur"></p>
              <ul class="grille" id="grille"></ul>`
       }
-      <div class="pied"><button class="lien" id="deconnexion">Se déconnecter</button></div>
     </main>`;
 
-  document.getElementById("deconnexion").addEventListener("click", () => signOut(auth));
   if (recettes.length === 0) return;
 
   const grille = document.getElementById("grille");
@@ -696,12 +649,14 @@ function pageErreur(err) {
       <main class="ecran seyes">
         <div class="carte avec-marge">
           <h1>Accès refusé</h1>
-          <p>Ce compte n'est pas autorisé dans les règles Firestore. Ajoute cet identifiant (UID) dans la liste :</p>
-          <p><code>${esc(utilisateur?.uid || "")}</code></p>
-          <button class="btn" id="deconnexion">Se déconnecter</button>
+          <p>Firestore a bloqué la lecture des recettes. Vérifie que les règles du fichier firestore.rules sont bien publiées dans la console Firebase.</p>
+          <button class="btn" id="reessayer">Réessayer</button>
         </div>
       </main>`;
-    document.getElementById("deconnexion").addEventListener("click", () => signOut(auth));
+    document.getElementById("reessayer").addEventListener("click", () => {
+      recettesCache = null;
+      route();
+    });
     return;
   }
   app.innerHTML = `
@@ -744,28 +699,13 @@ function demarrer() {
   }
 
   const firebase = initializeApp(firebaseConfig);
-  auth = getAuth(firebase);
   // cache local : les recettes déjà ouvertes restent consultables avec une connexion faible
   db = initializeFirestore(firebase, {
     localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
   });
 
-  let premierAppel = true;
-  onAuthStateChanged(auth, (user) => {
-    const change = (user?.uid || null) !== (utilisateur?.uid || null);
-    utilisateur = user;
-    if (change) {
-      recettesCache = null;
-      photosCache.clear();
-      recherche = "";
-      scrollAccueil = 0;
-      if (!user) history.replaceState(null, "", "#/");
-    }
-    if (change || premierAppel) route();
-    premierAppel = false;
-  });
-
   window.addEventListener("hashchange", route);
+  route();
 }
 
 demarrer();
