@@ -11,7 +11,7 @@ const firebaseConfig = {
   appId: "1:999863928968:web:b6d5583f480876ad41373d",
 };
 
-const TITRE = "Le carnet de recettes de Jenigger"; // mets son prénom !
+const TITRE = "Les recettes de Jenigger";
 
 /* ========================================================= */
 
